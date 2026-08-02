@@ -51,6 +51,7 @@ from app.translate import (
     sse,
     text_chunk,
     tool_calls_chunk,
+    usage_chunk,
     usage_from_turn,
 )
 
@@ -114,16 +115,6 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
 
     if not prompt.strip():
         raise OpenAIError("no user content in messages", status_code=400, param="messages")
-    if len(prompt) > settings.max_prompt_chars:
-        raise OpenAIError(
-            f"prompt is {len(prompt)} chars; the agy CLI accepts at most "
-            f"{settings.max_prompt_chars} (argv limit). Shorten the conversation "
-            "or let the server resume it via the conversation cache.",
-            status_code=400,
-            type="invalid_request_error",
-            code="context_length_exceeded",
-        )
-
     sess = AgySession(
         agy_bin=settings.agy_bin,
         model=model,
@@ -132,6 +123,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         conversation_id=conversation_id,
         agent=agent,
         print_timeout_s=settings.request_timeout_s,
+        max_inline_prompt_chars=settings.max_prompt_chars,
         timing_log=settings.timing_log,
         timing_label="autonomous",
     )
@@ -199,6 +191,8 @@ async def _stream(
                     ))
                     break
                 yield sse(finish_chunk(cid, model, created, "stop"))
+                if req.stream_options and req.stream_options.include_usage:
+                    yield sse(usage_chunk(cid, model, created, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
                 break
             if isinstance(ev, TextDelta):
                 out = joiner.feed(ev.text)
@@ -215,6 +209,8 @@ async def _stream(
                 completion_tokens = usage.get("completion_tokens", 0)
                 _store(cache, req, text_parts, ev)
                 yield sse(finish_chunk(cid, model, created, "stop", usage))
+                if req.stream_options and req.stream_options.include_usage:
+                    yield sse(usage_chunk(cid, model, created, usage))
                 break
             elif isinstance(ev, Error):
                 yield sse(error_envelope(ev.message, type="upstream_error"))
@@ -339,7 +335,7 @@ async def _handle_tools(
 
     if req.stream:
         return StreamingResponse(
-            _tool_stream(mgr, conv, cid, model, created, flatten, timing),
+            _tool_stream(mgr, conv, req, cid, model, created, flatten, timing),
             media_type="text/event-stream",
             headers=_SSE_HEADERS,
         )
@@ -347,7 +343,7 @@ async def _handle_tools(
     return JSONResponse(content=body)
 
 
-async def _tool_stream(mgr, conv, cid, model, created, flatten_tables: bool = True,
+async def _tool_stream(mgr, conv, req: ChatCompletionRequest, cid, model, created, flatten_tables: bool = True,
                        timing: bool = False):
     filt = OutputFilter(flatten_tables=flatten_tables)
     timer = TurnTimer(timing, "tool")
@@ -373,6 +369,8 @@ async def _tool_stream(mgr, conv, cid, model, created, flatten_tables: bool = Tr
                 ]
                 yield sse(tool_calls_chunk(cid, model, created, calls))
                 yield sse(finish_chunk(cid, model, created, "tool_calls"))
+                if req.stream_options and req.stream_options.include_usage:
+                    yield sse(usage_chunk(cid, model, created, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
                 break
             elif isinstance(ch, DoneChunk):
                 tail = filt.flush()
@@ -380,6 +378,8 @@ async def _tool_stream(mgr, conv, cid, model, created, flatten_tables: bool = Tr
                     yield sse(text_chunk(cid, model, created, tail))
                 completion_tokens = (ch.usage or {}).get("completion_tokens", 0)
                 yield sse(finish_chunk(cid, model, created, ch.finish_reason, ch.usage or None))
+                if req.stream_options and req.stream_options.include_usage:
+                    yield sse(usage_chunk(cid, model, created, ch.usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
                 break
             elif isinstance(ch, ErrorChunk):
                 yield sse(error_envelope(ch.message, type="upstream_error"))

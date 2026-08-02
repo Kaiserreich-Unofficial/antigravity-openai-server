@@ -23,6 +23,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -56,6 +58,7 @@ class AgySession:
         conversation_id: Optional[str] = None,
         agent: Optional[str] = None,
         print_timeout_s: int = 600,
+        max_inline_prompt_chars: int = 28000,
         timing_log: bool = False,
         timing_label: str = "session",
     ) -> None:
@@ -66,6 +69,7 @@ class AgySession:
         self.conversation_id = conversation_id
         self.agent = agent
         self.print_timeout_s = print_timeout_s
+        self.max_inline_prompt_chars = max_inline_prompt_chars
         self.timing_log = timing_log
         self.timing_label = timing_label
 
@@ -78,13 +82,15 @@ class AgySession:
         # Diagnostics: last raw stdout lines the parser skipped + stderr tail.
         self.raw_tail: deque[str] = deque(maxlen=5)
         self.stderr_tail: deque[str] = deque(maxlen=5)
+        self._prompt_path: Optional[Path] = None
 
     # ── command construction ────────────────────────────────────────────────
 
     def _build_args(self) -> list[str]:
+        prompt = self._prompt_argument()
         args = [
             self.agy_bin,
-            "-p", self.prompt,
+            "-p", prompt,
             "--output-format", "stream-json",
             "--dangerously-skip-permissions",
             "--print-timeout", f"{self.print_timeout_s}s",
@@ -97,6 +103,45 @@ class AgySession:
         if self.agent:
             args += ["--agent", self.agent]
         return args
+
+    def _prompt_argument(self) -> str:
+        """Return an argv-safe prompt, staging oversized contexts in the workspace.
+
+        Linux rejects a single argv item above MAX_ARG_STRLEN (typically 128 KiB),
+        while agy currently has no prompt-file or stdin option.  agy can read a
+        workspace file with its builtin file tool, so stage large OpenAI contexts
+        as a private temporary file and give it a small, explicit instruction.
+        """
+        if len(self.prompt) <= self.max_inline_prompt_chars:
+            return self.prompt
+        if self._prompt_path is None:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix=".agy-prompt-", suffix=".md",
+                dir=self.workdir, delete=False,
+            ) as handle:
+                # Keep physical lines short: agy's view_file tool can otherwise
+                # truncate a single enormous line before the model reaches the
+                # request at its end.
+                handle.write("\n".join(
+                    self.prompt[i:i + 8192] for i in range(0, len(self.prompt), 8192)
+                ))
+                self._prompt_path = Path(handle.name)
+            os.chmod(self._prompt_path, 0o600)
+            logger.info(
+                "staged oversized agy prompt: chars=%d threshold=%d path=%s",
+                len(self.prompt), self.max_inline_prompt_chars, self._prompt_path,
+            )
+        return (
+            "The complete request context is in this file: "
+            f"{self._prompt_path}. First read the entire file with your file-reading "
+            "tool. Treat its contents as the request context and then respond to it."
+        )
+
+    def _cleanup_prompt_file(self) -> None:
+        if self._prompt_path is not None:
+            with contextlib.suppress(FileNotFoundError):
+                self._prompt_path.unlink()
+            self._prompt_path = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────—
 
@@ -120,10 +165,14 @@ class AgySession:
                 limit=_READ_LIMIT,
             )
         except FileNotFoundError as e:
+            self._cleanup_prompt_file()
             raise RuntimeError(
                 "agy CLI not found on PATH — install the Antigravity CLI "
                 "(https://antigravity.google/docs/cli-install) and sign in"
             ) from e
+        except Exception:
+            self._cleanup_prompt_file()
+            raise
         log_spawn(self.timing_log, self.timing_label, (time.monotonic() - spawn_t0) * 1000)
         self._reader_task = asyncio.create_task(self._read_stdout(), name="agy-stdout")
         self._stderr_task = asyncio.create_task(self._read_stderr(), name="agy-stderr")
@@ -228,3 +277,4 @@ class AgySession:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        self._cleanup_prompt_file()

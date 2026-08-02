@@ -211,6 +211,7 @@ class ConversationManager:
             # The proc must survive suspensions (blocked in our MCP call while
             # hermes runs the tool), so its own ceiling exceeds one request's.
             print_timeout_s=self.settings.request_timeout_s + self.settings.suspended_ttl_s,
+            max_inline_prompt_chars=self.settings.max_prompt_chars,
             timing_log=self.settings.timing_log,
             timing_label="tool",
         )

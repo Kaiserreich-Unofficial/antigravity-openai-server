@@ -14,7 +14,7 @@ dependencies = [
     "httptools>=0.6",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
-    "mcp>=1.2",
+    "mcp>=1.2,<2",  # bridge uses the MCP 1.x decorator API
     "sse-starlette>=2.1",
 ]
 

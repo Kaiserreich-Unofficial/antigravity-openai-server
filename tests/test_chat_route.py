@@ -243,14 +243,15 @@ async def test_empty_messages_rejected(client):
     assert r.status_code == 400
 
 
-async def test_prompt_length_guard(client, monkeypatch):
+async def test_large_prompt_is_staged_instead_of_rejected(client, fake_agy, monkeypatch):
+    fake_agy("simple")
     http, _ = client
     monkeypatch.setattr(get_settings(), "max_prompt_chars", 10)
     r = await http.post("/v1/chat/completions", json={
         "messages": [{"role": "user", "content": "x" * 50}],
     })
-    assert r.status_code == 400
-    assert r.json()["error"]["code"] == "context_length_exceeded"
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "Hello world"
 
 
 async def test_models_endpoint(client):

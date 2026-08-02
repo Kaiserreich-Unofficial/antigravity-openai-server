@@ -15,7 +15,7 @@ follow-up turns resume it via `--conversation <id>`.
 ## What it does
 
 - **OpenAI surface:** `GET /v1/models` and `POST /v1/chat/completions`
-  (streaming + non-streaming).
+  (streaming + non-streaming). Includes full support for `stream_options: {"include_usage": true}`.
 - **OpenAI function calling:** your client's `tools` are passed through to
   Antigravity via an in-process MCP bridge. The model calls them through agy's
   `call_mcp_tool`, the server returns a normal `tool_calls` response, your

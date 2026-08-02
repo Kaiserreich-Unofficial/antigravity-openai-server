@@ -273,16 +273,17 @@ def _chunk(
     model: str,
     created: int,
     *,
-    delta: dict[str, Any],
+    delta: Optional[dict[str, Any]] = None,
     finish_reason: Optional[str] = None,
     usage: Optional[dict[str, Any]] = None,
+    empty_choices: bool = False,
 ) -> dict[str, Any]:
     obj: dict[str, Any] = {
         "id": cid,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        "choices": [] if empty_choices else [{"index": 0, "delta": delta or {}, "finish_reason": finish_reason}],
     }
     if usage is not None:
         obj["usage"] = usage
@@ -317,6 +318,10 @@ def finish_chunk(
     usage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     return _chunk(cid, model, created, delta={}, finish_reason=finish_reason, usage=usage)
+
+
+def usage_chunk(cid: str, model: str, created: int, usage: dict[str, Any]) -> dict[str, Any]:
+    return _chunk(cid, model, created, empty_choices=True, usage=usage)
 
 
 # ── non-streaming response ─────────────────────────────────────────────────—

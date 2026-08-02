@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+import os
+os.environ["AGI_HOST"] = "127.0.0.1"
+os.environ.pop("AGI_API_KEY", None)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agy_session import AgySession  # noqa: E402

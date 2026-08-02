@@ -83,9 +83,9 @@ class Settings(BaseSettings):
     default_effort: Optional[str] = None
 
     # ── Prompt handling ──────────────────────────────────────────────────────
-    # agy takes the prompt as an argv argument (stdin piping is NOT supported in
-    # 1.1.4 — verified live: `echo .. | agy -p` yields "no output produced").
-    # Windows caps a command line at ~32,767 chars; stay safely below it.
+    # Prompts at or below this size travel as argv. Larger prompts are staged in
+    # a private workspace file and agy is instructed to read it, avoiding the
+    # per-argument OS limit while retaining the full request context.
     max_prompt_chars: int = 28000
     # ── System prompt via managed agent ─────────────────────────────────────
     # Deliver the request's system message as a REAL system prompt: materialize

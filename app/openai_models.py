@@ -68,11 +68,17 @@ class ChatMessage(BaseModel):
 # ── Request ─────────────────────────────────────────────────────────────────
 
 
+class StreamOptions(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    include_usage: Optional[bool] = None
+
+
 class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
     model: Optional[str] = None
     messages: list[ChatMessage]
     stream: bool = False
+    stream_options: Optional[StreamOptions] = None
     tools: Optional[list[ToolDef]] = None
     tool_choice: Optional[Union[str, dict[str, Any]]] = None
     # Accepted but not acted on (no clean CLI equivalent):
