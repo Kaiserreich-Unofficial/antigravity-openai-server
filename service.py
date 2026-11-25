@@ -1,19 +1,25 @@
 """Windows service wrapper and installer for the antigravity-interface server.
 
-The service listens on http://127.0.0.1:8790/v1 and must run as the Windows
-account that signed in to agy: the OAuth token lives in that account's
-Credential Manager entry ("gemini:antigravity"), which a SYSTEM service cannot
-read. Install from an elevated shell:
+The service listens on http://127.0.0.1:8790/v1. Install it from an elevated
+shell:
 
-    .venv\\Scripts\\python.exe service.py install
+    .venv\\Scripts\\python.exe service.py install          # service runs as SYSTEM
+    .venv\\Scripts\\python.exe service.py install --account .\\Administrator
     .venv\\Scripts\\python.exe service.py start|stop|restart|status|uninstall
-    .venv\\Scripts\\python.exe service.py run        (foreground, for debugging)
+    .venv\\Scripts\\python.exe service.py run              # foreground debugging
 
-The installer prompts for the account password (Windows services cannot log on
-interactively) and grants "Log on as a service". The account, its profile paths
-and the proxy variables are captured into service.env.json so the service can
-reach Google and agy's credential store even though it starts without a user
-session.
+Account model
+-------------
+agy keeps its Google sign-in in the Credential Manager entry
+"gemini:antigravity", which only exists for the Windows user that signed in, and
+it needs that user's HTTP(S)_PROXY. A service running as SYSTEM cannot read
+either. So by default the service runs as SYSTEM and, once a user session is
+available, takes that user's token with WTSQueryUserToken and starts the actual
+server process under it (CreateProcessAsUser). No Windows password is needed.
+
+With --account the service is instead configured to log on as that user, which
+requires the account password (prompted) and "Log on as a service"; that path
+exists for machines without an interactive session.
 
 When the Service Control Manager launches this file with no arguments, it hosts
 AgiServerService through the pywin32 dispatcher.
@@ -42,7 +48,6 @@ DESCRIPTION = "OpenAI-compatible Antigravity (agy) server on http://127.0.0.1:87
 HOST = "127.0.0.1"
 PORT = 8790
 
-# Variables the service process needs but does not inherit from a user session.
 CAPTURED_ENV = (
     "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "HOME",
     "TEMP", "TMP",
@@ -66,7 +71,6 @@ def find_agy() -> str:
 
 
 def proxy_from_registry() -> str:
-    """Fallback for when the installer runs without the user's env vars."""
     try:
         import winreg
 
@@ -123,9 +127,100 @@ def load_environment() -> None:
 # ── service body ────────────────────────────────────────────────────────────
 
 import servicemanager  # noqa: E402
+import win32api  # noqa: E402
+import win32con  # noqa: E402
 import win32event  # noqa: E402
+import win32process  # noqa: E402
+import win32profile  # noqa: E402
+import win32security  # noqa: E402
 import win32service  # noqa: E402
 import win32serviceutil  # noqa: E402
+import win32ts  # noqa: E402
+
+
+def is_system() -> bool:
+    try:
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+        info = win32security.GetTokenInformation(token, win32security.TokenUser)
+        sid = info[0] if isinstance(info, tuple) else info
+        return win32security.ConvertSidToStringSid(sid) == "S-1-5-18"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def logged_on_session() -> tuple[int, str] | None:
+    """Best interactive session that has a user: (session_id, user_name)."""
+    try:
+        sessions = win32ts.WTSEnumerateSessions()
+    except Exception:  # noqa: BLE001
+        return None
+    ranked = []
+    for session in sessions:
+        sid = session.get("SessionId", 0)
+        state = session.get("State")
+        if not sid:
+            continue
+        try:
+            user = win32ts.WTSQuerySessionInformation(None, sid, win32ts.WTSUserName)
+        except Exception:  # noqa: BLE001
+            continue
+        if not user:
+            continue
+        rank = 0 if state == win32ts.WTSActive else 1 if state == win32ts.WTSDisconnected else 2
+        ranked.append((rank, sid, user))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0])
+    _, sid, user = ranked[0]
+    return sid, user
+
+
+def spawn_server_as_user() -> int | None:
+    """Start ``service.py run --service-child`` with the logged-on user's token."""
+    found = logged_on_session()
+    if found is None:
+        servicemanager.LogInfoMsg("no logged-on user session yet; will retry")
+        return None
+    session_id, user = found
+    token = None
+    primary = None
+    try:
+        token = win32ts.WTSQueryUserToken(session_id)
+        primary = win32security.DuplicateTokenEx(
+            token,
+            win32security.SecurityImpersonation,
+            win32security.TOKEN_ALL_ACCESS,
+            win32security.TokenPrimary,
+            None,
+        )
+        env = win32profile.CreateEnvironmentBlock(primary, False)
+        startup = win32process.STARTUPINFO()
+        command = f'"{sys.executable}" "{os.path.abspath(__file__)}" run --service-child'
+        process, thread, pid, _ = win32process.CreateProcessAsUser(
+            primary,
+            sys.executable,
+            command,
+            None,
+            None,
+            0,
+            win32con.CREATE_UNICODE_ENVIRONMENT | win32con.CREATE_NO_WINDOW,
+            env,
+            ROOT,
+            startup,
+        )
+        win32api.CloseHandle(thread)
+        servicemanager.LogInfoMsg(
+            f"server started as {user} (session {session_id}, pid {pid})"
+        )
+        return process
+    except Exception:  # noqa: BLE001
+        servicemanager.LogErrorMsg(f"could not start server as user: {traceback.format_exc()}")
+        if primary is not None:
+            win32api.CloseHandle(primary)
+        return None
+    finally:
+        if token is not None:
+            win32api.CloseHandle(token)
 
 
 class AgiServerService(win32serviceutil.ServiceFramework):
@@ -138,11 +233,17 @@ class AgiServerService(win32serviceutil.ServiceFramework):
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
         self.server = None
         self.thread = None
+        self.child = None
 
     def SvcStop(self) -> None:
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         if self.server is not None:
             self.server.should_exit = True
+        if self.child is not None:
+            try:
+                win32api.TerminateProcess(self.child, 0)
+            except Exception:  # noqa: BLE001
+                pass
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self) -> None:
@@ -150,32 +251,53 @@ class AgiServerService(win32serviceutil.ServiceFramework):
         try:
             load_environment()
             os.makedirs(LOG_DIR, exist_ok=True)
-            log = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
-            sys.stdout = log
-            sys.stderr = log
-            import uvicorn
-
-            config = uvicorn.Config(
-                "app.main:app", host=HOST, port=PORT, log_level="info"
-            )
-            self.server = uvicorn.Server(config)
-            self.thread = threading.Thread(target=self.server.run, name="uvicorn", daemon=True)
-            self.thread.start()
-            while True:
-                rc = win32event.WaitForSingleObject(self.stop_event, 1000)
-                if rc == win32event.WAIT_OBJECT_0:
-                    break
-                if not self.thread.is_alive():
-                    servicemanager.LogErrorMsg(
-                        f"{SERVICE_NAME}: server exited unexpectedly; see {LOG_FILE}"
-                    )
-                    raise RuntimeError("server thread exited unexpectedly")
-            self.server.should_exit = True
-            self.thread.join(timeout=20)
+            if is_system():
+                self._supervise_user_child()
+            else:
+                self._run_inline()
             servicemanager.LogInfoMsg(f"{SERVICE_NAME} stopped")
         except Exception:
             servicemanager.LogErrorMsg(f"{SERVICE_NAME} failed:\n{traceback.format_exc()}")
             raise
+
+    def _supervise_user_child(self) -> None:
+        """SYSTEM: keep a user-context server child alive until Stop."""
+        while True:
+            if win32event.WaitForSingleObject(self.stop_event, 3000) == win32event.WAIT_OBJECT_0:
+                break
+            if self.child is not None:
+                if win32event.WaitForSingleObject(self.child, 0) == win32event.WAIT_OBJECT_0:
+                    win32api.CloseHandle(self.child)
+                    self.child = None
+                    servicemanager.LogWarningMsg("server child exited; restarting")
+            if self.child is None:
+                self.child = spawn_server_as_user()
+        if self.child is not None:
+            win32api.TerminateProcess(self.child, 0)
+            win32event.WaitForSingleObject(self.child, 5000)
+            win32api.CloseHandle(self.child)
+            self.child = None
+
+    def _run_inline(self) -> None:
+        """User-account service: host uvicorn in this process."""
+        import uvicorn
+
+        log = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+        sys.stdout = log
+        sys.stderr = log
+        config = uvicorn.Config("app.main:app", host=HOST, port=PORT, log_level="info")
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self.server.run, name="uvicorn", daemon=True)
+        self.thread.start()
+        while True:
+            rc = win32event.WaitForSingleObject(self.stop_event, 1000)
+            if rc == win32event.WAIT_OBJECT_0:
+                break
+            if not self.thread.is_alive():
+                servicemanager.LogErrorMsg(f"{SERVICE_NAME}: server exited unexpectedly; see {LOG_FILE}")
+                raise RuntimeError("server thread exited unexpectedly")
+        self.server.should_exit = True
+        self.thread.join(timeout=20)
 
 
 # ── installer / control ─────────────────────────────────────────────────────
@@ -192,8 +314,6 @@ def require_admin() -> None:
 
 def grant_logon_as_service(account: str) -> None:
     try:
-        import win32security
-
         policy = win32security.LsaOpenPolicy(None, win32security.POLICY_ALL_ACCESS)
         try:
             sid, _, _ = win32security.LookupAccountName(None, account)
@@ -269,7 +389,6 @@ def _delete_service() -> None:
             win32service.DeleteService(handle)
         finally:
             win32service.CloseServiceHandle(handle)
-        # The service object disappears once SCM drops its references.
         for _ in range(60):
             try:
                 probe = win32service.OpenService(scm, SERVICE_NAME, win32service.SERVICE_QUERY_STATUS)
@@ -290,21 +409,24 @@ def cmd_install(args: argparse.Namespace) -> None:
         )
         raise SystemExit(1)
 
-    account = args.account or f"{os.environ.get('COMPUTERNAME', '.')}\\{os.environ.get('USERNAME', '')}"
-    password = args.password or getpass.getpass(f"Windows password for {account}: ")
-    if not password:
-        print("A password is required: Windows services cannot log on interactively.", file=sys.stderr)
-        raise SystemExit(1)
+    account = args.account
+    password = None
+    if account:
+        password = args.password or getpass.getpass(f"Windows password for {account}: ")
+        if not password:
+            print("A password is required when installing with --account.", file=sys.stderr)
+            raise SystemExit(1)
 
     os.makedirs(LOG_DIR, exist_ok=True)
     saved = {key: os.environ.get(key, "") for key in CAPTURED_ENV}
-    saved["account"] = account
+    saved["account"] = account or "LocalSystem"
     saved["agy_bin"] = find_agy()
     with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
         json.dump(saved, fh, indent=2)
 
     _delete_service()
-    grant_logon_as_service(account)
+    if account:
+        grant_logon_as_service(account)
 
     binary_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
     scm = _open_scm(win32service.SC_MANAGER_ALL_ACCESS)
@@ -333,7 +455,8 @@ def cmd_install(args: argparse.Namespace) -> None:
     finally:
         win32service.CloseServiceHandle(scm)
 
-    print(f"Installed service {SERVICE_NAME} ({DISPLAY_NAME}), running as {account}.")
+    who = account if account else "LocalSystem (server runs as the logged-on user)"
+    print(f"Installed service {SERVICE_NAME} ({DISPLAY_NAME}); account: {who}.")
     _start_and_report()
 
 
@@ -355,7 +478,7 @@ def _start_and_report() -> None:
     else:
         print("Service did not answer /healthz in time. Last log lines:", file=sys.stderr)
         print(tail_log(), file=sys.stderr)
-        print("Check services.msc for the exit code (a wrong password shows as 1069).", file=sys.stderr)
+        print("Check services.msc for the state (a bad account password shows as 1069).", file=sys.stderr)
         raise SystemExit(1)
 
 
@@ -415,9 +538,13 @@ def cmd_uninstall(_: argparse.Namespace) -> None:
     print(f"Removed service {SERVICE_NAME}. service.env.json is kept.")
 
 
-def cmd_run(_: argparse.Namespace) -> None:
+def cmd_run(args: argparse.Namespace) -> None:
     load_environment()
     os.makedirs(LOG_DIR, exist_ok=True)
+    if args.service_child:
+        log = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+        sys.stdout = log
+        sys.stderr = log
     import uvicorn
 
     uvicorn.run("app.main:app", host=HOST, port=PORT, log_level="info")
@@ -428,7 +555,7 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     install = sub.add_parser("install", help="create the service and start it")
-    install.add_argument("--account", help="Windows account to run as (default: current user)")
+    install.add_argument("--account", help="run the service as this user (needs --password)")
     install.add_argument("--password", help="account password (prompted when omitted)")
     install.set_defaults(func=cmd_install)
 
@@ -437,7 +564,10 @@ def main(argv: list[str]) -> int:
     sub.add_parser("stop", help="stop the service").set_defaults(func=cmd_stop)
     sub.add_parser("restart", help="restart the service").set_defaults(func=cmd_restart)
     sub.add_parser("status", help="print the service state").set_defaults(func=cmd_status)
-    sub.add_parser("run", help="run the server in the foreground").set_defaults(func=cmd_run)
+
+    run = sub.add_parser("run", help="run the server in the foreground")
+    run.add_argument("--service-child", action="store_true", help=argparse.SUPPRESS)
+    run.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)
     args.func(args)
