@@ -9,43 +9,47 @@ def make_settings(**kw) -> Settings:
 
 def test_display_name_passthrough_case_insensitive():
     s = make_settings()
-    assert resolve_model("Gemini 3.5 Flash (Low)", s) == "Gemini 3.5 Flash (Low)"
-    assert resolve_model("gemini 3.5 flash (low)", s) == "Gemini 3.5 Flash (Low)"
-    assert resolve_model("claude sonnet 4.6 (thinking)", s) == "Claude Sonnet 4.6 (Thinking)"
+    assert resolve_model("Gemini 4 Neon (Low)", s) == "Gemini 4 Neon (Low)"
+    assert resolve_model("gemini 4 neon (low)", s) == "Gemini 4 Neon (Low)"
+    assert resolve_model("claude sonnet 5.5 (medium)", s) == "Claude Sonnet 5.5 (Medium)"
 
 
 def test_slug_with_effort_param():
     s = make_settings()
-    assert resolve_model("gemini-3.5-flash", s) == "Gemini 3.5 Flash (Medium)"
-    assert resolve_model("gemini-3.5-flash", s, effort="high") == "Gemini 3.5 Flash (High)"
-    assert resolve_model("gemini-3.5-flash", s, effort="low") == "Gemini 3.5 Flash (Low)"
+    assert resolve_model("gemini-3.8-flash", s) == "Gemini 3.8 Flash (Medium)"
+    assert resolve_model("gemini-3.8-flash", s, effort="high") == "Gemini 3.8 Flash (High)"
+    assert resolve_model("gemini-3.8-flash", s, effort="low") == "Gemini 3.8 Flash (Low)"
+    assert resolve_model("gemini-4-neon", s, effort="xhigh") == "Gemini 4 Neon (XHigh)"
 
 
 def test_slug_effort_suffix_overrides():
     s = make_settings()
-    assert resolve_model("gemini-3.5-flash-low", s, effort="high") == "Gemini 3.5 Flash (Low)"
-    assert resolve_model("gemini-3.1-pro-high", s) == "Gemini 3.1 Pro (High)"
+    assert resolve_model("gemini-3.8-flash-low", s, effort="high") == "Gemini 3.8 Flash (Low)"
+    assert resolve_model("gemini-4-hydrogen-xhigh", s) == "Gemini 4 Hydrogen (XHigh)"
+    assert resolve_model("gemini-4-neon-high", s) == "Gemini 4 Neon (High)"
 
 
-def test_pro_family_without_medium():
+def test_family_without_effort_prefers_medium():
     s = make_settings()
-    # No medium variant: effortless request prefers high, then low.
-    assert resolve_model("gemini-3.1-pro", s) == "Gemini 3.1 Pro (High)"
-    assert resolve_model("gemini-3.1-pro", s, effort="low") == "Gemini 3.1 Pro (Low)"
+    assert resolve_model("gemini-4-carbon", s) == "Gemini 4 Carbon (Medium)"
+    assert resolve_model("gemini-4-argon", s, effort="high") == "Gemini 4 Argon (High)"
 
 
 def test_single_variant_families_ignore_effort():
     s = make_settings()
-    assert resolve_model("claude-sonnet-4.6", s, effort="low") == "Claude Sonnet 4.6 (Thinking)"
-    assert resolve_model("opus", s) == "Claude Opus 4.6 (Thinking)"
+    assert resolve_model("orchestrator", s, effort="low") == "Orchestrator (Carbon)"
     assert resolve_model("gpt-oss", s) == "GPT-OSS 120B (Medium)"
+    assert resolve_model("opus", s) == "Claude Opus 5.5 (Medium)"
+    assert resolve_model("sonnet", s, effort="low") == "Claude Sonnet 5.5 (Low)"
+    # Clients that send levels above `high` land on the top variant.
+    assert resolve_model("claude-sonnet-5.5", s, effort="max") == "Claude Sonnet 5.5 (High)"
 
 
 def test_unknown_falls_back_to_default():
-    s = make_settings(default_model="Gemini 3.5 Flash (High)")
-    assert resolve_model("gpt-4o", s) == "Gemini 3.5 Flash (High)"
-    assert resolve_model(None, s) == "Gemini 3.5 Flash (High)"
-    assert resolve_model("", s) == "Gemini 3.5 Flash (High)"
+    s = make_settings(default_model="Gemini 4 Neon (High)")
+    assert resolve_model("gpt-4o", s) == "Gemini 4 Neon (High)"
+    assert resolve_model(None, s) == "Gemini 4 Neon (High)"
+    assert resolve_model("", s) == "Gemini 4 Neon (High)"
 
 
 def test_loopback_detection():

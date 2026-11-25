@@ -20,43 +20,99 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # error listing these). `agy models` is the source of truth; this static list
 # is the fallback/alias basis and should track it.
 KNOWN_MODELS = [
-    "Gemini 3.5 Flash (Medium)",
-    "Gemini 3.5 Flash (High)",
-    "Gemini 3.5 Flash (Low)",
-    "Gemini 3.1 Pro (Low)",
-    "Gemini 3.1 Pro (High)",
-    "Claude Sonnet 4.6 (Thinking)",
-    "Claude Opus 4.6 (Thinking)",
+    "Gemini 4 Neon (High)",
+    "Gemini 4 Neon (XHigh)",
+    "Gemini 4 Neon (Medium)",
+    "Gemini 4 Neon (Low)",
+    "Gemini 4 Carbon (Medium)",
+    "Gemini 4 Carbon (High)",
+    "Gemini 4 Carbon (Low)",
+    "Gemini 4 Argon (Medium)",
+    "Gemini 4 Argon (High)",
+    "Gemini 4 Argon (Low)",
+    "Gemini 4 Hydrogen (High)",
+    "Gemini 4 Hydrogen (XHigh)",
+    "Gemini 4 Hydrogen (Medium)",
+    "Gemini 4 Hydrogen (Low)",
+    "Orchestrator (Neon)",
+    "Orchestrator (Carbon)",
+    "Orchestrator (Argon)",
+    "Gemini 3.8 Flash (High)",
+    "Gemini 3.8 Flash (Medium)",
+    "Gemini 3.8 Flash (Low)",
+    "Claude Opus 5.5 (Low)",
+    "Claude Opus 5.5 (Medium)",
+    "Claude Opus 5.5 (High)",
+    "Claude Sonnet 5.5 (Low)",
+    "Claude Sonnet 5.5 (Medium)",
+    "Claude Sonnet 5.5 (High)",
     "GPT-OSS 120B (Medium)",
 ]
 
-# OpenAI-friendly slug → display-name family. Effort (low/medium/high) selects
-# the variant when the family has one; see resolve_model.
+# OpenAI-friendly slug → display-name family. Effort (low/medium/high/xhigh)
+# selects the variant when the family has one; see resolve_model.
 _FAMILY_VARIANTS: dict[str, dict[str, str]] = {
-    "gemini-3.5-flash": {
-        "low": "Gemini 3.5 Flash (Low)",
-        "medium": "Gemini 3.5 Flash (Medium)",
-        "high": "Gemini 3.5 Flash (High)",
+    "gemini-4-neon": {
+        "low": "Gemini 4 Neon (Low)",
+        "medium": "Gemini 4 Neon (Medium)",
+        "high": "Gemini 4 Neon (High)",
+        "xhigh": "Gemini 4 Neon (XHigh)",
     },
-    "gemini-3.1-pro": {
-        "low": "Gemini 3.1 Pro (Low)",
-        "high": "Gemini 3.1 Pro (High)",
+    "gemini-4-carbon": {
+        "low": "Gemini 4 Carbon (Low)",
+        "medium": "Gemini 4 Carbon (Medium)",
+        "high": "Gemini 4 Carbon (High)",
     },
-    "claude-sonnet-4.6": {"": "Claude Sonnet 4.6 (Thinking)"},
-    "claude-opus-4.6": {"": "Claude Opus 4.6 (Thinking)"},
+    "gemini-4-argon": {
+        "low": "Gemini 4 Argon (Low)",
+        "medium": "Gemini 4 Argon (Medium)",
+        "high": "Gemini 4 Argon (High)",
+    },
+    "gemini-4-hydrogen": {
+        "low": "Gemini 4 Hydrogen (Low)",
+        "medium": "Gemini 4 Hydrogen (Medium)",
+        "high": "Gemini 4 Hydrogen (High)",
+        "xhigh": "Gemini 4 Hydrogen (XHigh)",
+    },
+    "gemini-3.8-flash": {
+        "low": "Gemini 3.8 Flash (Low)",
+        "medium": "Gemini 3.8 Flash (Medium)",
+        "high": "Gemini 3.8 Flash (High)",
+    },
+    "claude-opus-5.5": {
+        "low": "Claude Opus 5.5 (Low)",
+        "medium": "Claude Opus 5.5 (Medium)",
+        "high": "Claude Opus 5.5 (High)",
+    },
+    "claude-sonnet-5.5": {
+        "low": "Claude Sonnet 5.5 (Low)",
+        "medium": "Claude Sonnet 5.5 (Medium)",
+        "high": "Claude Sonnet 5.5 (High)",
+    },
     "gpt-oss-120b": {"": "GPT-OSS 120B (Medium)"},
+    "orchestrator-neon": {"": "Orchestrator (Neon)"},
+    "orchestrator-carbon": {"": "Orchestrator (Carbon)"},
+    "orchestrator-argon": {"": "Orchestrator (Argon)"},
 }
 
 # Extra aliases → family slug.
 _ALIASES: dict[str, str] = {
-    "gemini-flash": "gemini-3.5-flash",
-    "flash": "gemini-3.5-flash",
-    "gemini-pro": "gemini-3.1-pro",
-    "pro": "gemini-3.1-pro",
-    "claude-sonnet": "claude-sonnet-4.6",
-    "sonnet": "claude-sonnet-4.6",
-    "claude-opus": "claude-opus-4.6",
-    "opus": "claude-opus-4.6",
+    "gemini": "gemini-4-neon",
+    "gemini-flash": "gemini-3.8-flash",
+    "flash": "gemini-3.8-flash",
+    "gemini-neon": "gemini-4-neon",
+    "neon": "gemini-4-neon",
+    "gemini-carbon": "gemini-4-carbon",
+    "carbon": "gemini-4-carbon",
+    "gemini-argon": "gemini-4-argon",
+    "argon": "gemini-4-argon",
+    "gemini-hydrogen": "gemini-4-hydrogen",
+    "hydrogen": "gemini-4-hydrogen",
+    "orchestrator": "orchestrator-carbon",
+    "claude-sonnet": "claude-sonnet-5.5",
+    "sonnet": "claude-sonnet-5.5",
+    "claude-opus": "claude-opus-5.5",
+    "opus": "claude-opus-5.5",
     "gpt-oss": "gpt-oss-120b",
 }
 
@@ -79,7 +135,7 @@ class Settings(BaseSettings):
 
     # ── Antigravity CLI ──────────────────────────────────────────────────────
     agy_bin: str = "agy"
-    default_model: str = "Gemini 3.5 Flash (Medium)"
+    default_model: str = "Gemini 3.8 Flash (Medium)"
     default_effort: Optional[str] = None
 
     # ── Prompt handling ──────────────────────────────────────────────────────
@@ -220,8 +276,11 @@ def resolve_model(
 
     slug = r.lower().replace(" ", "-")
     eff = (effort or "").strip().lower()
-    # A trailing -low/-medium/-high on the slug overrides `effort`.
-    for suffix in ("low", "medium", "high"):
+    # Levels above `high` (some clients send max/ultra) map onto the top variant.
+    eff = {"max": "high", "ultra": "high"}.get(eff, eff)
+    # A trailing -low/-medium/-high/-xhigh on the slug overrides `effort`.
+    # Order matters: check `xhigh` before `high` so it is not half-stripped.
+    for suffix in ("xhigh", "low", "medium", "high"):
         if slug.endswith("-" + suffix):
             slug = slug[: -(len(suffix) + 1)]
             eff = suffix
@@ -235,7 +294,7 @@ def resolve_model(
         if eff in variants:
             return variants[eff]
         # Effort absent/unknown: prefer medium, then high, then low.
-        for pick in ("medium", "high", "low"):
+        for pick in ("medium", "high", "low", "xhigh"):
             if pick in variants:
                 return variants[pick]
     return settings.default_model

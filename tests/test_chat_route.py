@@ -30,7 +30,7 @@ async def test_nonstream_simple(client, fake_agy):
     fake_agy("simple")
     http, _ = client
     r = await http.post("/v1/chat/completions", json={
-        "model": "gemini-3.5-flash",
+        "model": "gemini-3.8-flash",
         "messages": [{"role": "user", "content": "hi"}],
     })
     assert r.status_code == 200
@@ -47,7 +47,7 @@ async def test_stream_simple(client, fake_agy):
     fake_agy("simple")
     http, _ = client
     r = await http.post("/v1/chat/completions", json={
-        "model": "gemini-3.5-flash",
+        "model": "gemini-3.8-flash",
         "stream": True,
         "messages": [{"role": "user", "content": "hi"}],
     })
@@ -258,8 +258,9 @@ async def test_models_endpoint(client):
     http, _ = client
     r = await http.get("/v1/models")
     ids = [m["id"] for m in r.json()["data"]]
-    assert "gemini-3.5-flash" in ids
-    assert "Gemini 3.5 Flash (Medium)" in ids
+    assert "gemini-3.8-flash" in ids
+    assert "Gemini 3.8 Flash (Medium)" in ids
+    assert "gemini-3.5-flash" not in ids
 
 
 async def test_healthz(client):
