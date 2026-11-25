@@ -120,7 +120,7 @@ _ALIASES: dict[str, str] = {
 class Settings(BaseSettings):
     """Server settings. Override any field via an ``AGI_<FIELD>`` environment var."""
 
-    model_config = SettingsConfigDict(env_prefix="AGI_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="AGI_", env_file=".env", extra="ignore")
 
     # ── HTTP server ──────────────────────────────────────────────────────────
     host: str = "127.0.0.1"
