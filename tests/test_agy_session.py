@@ -128,3 +128,49 @@ async def test_missing_binary_raises(tmp_path):
     )
     with pytest.raises(RuntimeError, match="agy CLI not found"):
         await sess.start()
+
+
+async def test_large_prompt_travels_over_stdin(fake_agy, tmp_path):
+    fake_agy("stdin")
+    prompt = "中文上下文：" + "数据" * 20
+    sess = make_session(tmp_path, prompt=prompt, max_inline_prompt_chars=5)
+    await sess.start()
+    events = await drain(sess)
+    await sess.aclose()
+
+    # The turn message round-trips as UTF-8 JSON on stdin, unmodified.
+    done = [e for e in events if isinstance(e, TurnDone)]
+    assert done and done[0].response_text == prompt
+    # Nothing is staged in the workspace any more.
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_large_prompt_argv_has_no_inline_prompt(fake_agy, tmp_path):
+    fake_agy("echoargs")
+    sess = make_session(tmp_path, prompt="x" * 40, max_inline_prompt_chars=10)
+    await sess.start()
+    await drain(sess)
+    await sess.aclose()
+
+    argv_line = next((l for l in sess.raw_tail if l.startswith('{"argv"')), None)
+    assert argv_line is not None
+    argv = json.loads(argv_line)["argv"]
+    assert "--input-format" in argv and "stream-json" in argv
+    assert "-p" not in argv
+    assert not any(a == "x" * 40 for a in argv)
+
+
+async def test_restart_reruns_the_same_turn(fake_agy, tmp_path):
+    fake_agy("reject-once")
+    sess = make_session(tmp_path, prompt="hello again")
+    await sess.start()
+    first = await drain(sess)
+    errs = [e for e in first if isinstance(e, Error)]
+    assert errs and "INVALID_ARGUMENT" in errs[0].message
+
+    await sess.restart()
+    second = await drain(sess)
+    await sess.aclose()
+
+    done = [e for e in second if isinstance(e, TurnDone)]
+    assert done and done[0].response_text == "retry ok"

@@ -139,9 +139,11 @@ class Settings(BaseSettings):
     default_effort: Optional[str] = None
 
     # ── Prompt handling ──────────────────────────────────────────────────────
-    # Prompts at or below this size travel as argv. Larger prompts are staged in
-    # a private workspace file and agy is instructed to read it, avoiding the
-    # per-argument OS limit while retaining the full request context.
+    # Prompts at or below this size travel as argv. Larger prompts go over stdin
+    # with agy's stream-json input format (one NDJSON turn message, then EOF),
+    # which sidesteps the per-argument OS limit and — unlike a staged workspace
+    # file — is decoded as UTF-8 by agy instead of being re-sniffed (its file
+    # reader mistakes mostly-ASCII UTF-8 with CJK text for GBK).
     max_prompt_chars: int = 28000
     # ── System prompt via managed agent ─────────────────────────────────────
     # Deliver the request's system message as a REAL system prompt: materialize

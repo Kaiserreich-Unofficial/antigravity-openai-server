@@ -6,6 +6,9 @@ Reads its behavior from the FAKE_AGY_SCRIPT env var:
   * "error"   — result with status ERROR
   * "noise"   — non-JSON noise then EOF (no result), plus stderr text
   * "echoargs"— emit argv as JSON on one line (for arg-construction tests)
+  * "stdin"   — read one stream-json turn message from stdin, echo its shape
+  * "reject-once" — first run: upstream INVALID_ARGUMENT; later runs succeed
+    (marker file in the cwd, so a restarted process sees it)
 Sleeps FAKE_AGY_DELAY seconds (float, default 0) before the result line.
 """
 import json
@@ -62,6 +65,34 @@ def main():
     if MODE == "echoargs":
         emit({"argv": sys.argv[1:]})
         result(response="argv echoed")
+        return
+
+    if MODE == "stdin":
+        raw = sys.stdin.buffer.read().decode("utf-8")
+        try:
+            msg = json.loads(raw.strip().splitlines()[0])
+        except (ValueError, IndexError):
+            result(status="ERROR", response="", error="no stdin message")
+            return
+        content = msg["message"]["content"]
+        init_line()
+        text(1, content)
+        result(response=content)
+        return
+
+    if MODE == "reject-once":
+        marker = os.path.join(os.getcwd(), ".fake-reject-once")
+        if os.path.exists(marker):
+            init_line()
+            text(1, "retry ok")
+            result(response="retry ok")
+            return
+        open(marker, "w").close()
+        result(
+            status="ERROR",
+            response="",
+            error="INVALID_ARGUMENT (code 400): Request contains an invalid argument.",
+        )
         return
 
     if MODE == "noise":

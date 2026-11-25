@@ -59,6 +59,16 @@ async def collect_turn(mgr, conv):
     return chunks
 
 
+async def test_rejected_turn_is_retried_once(mgr, fake_agy):
+    fake_agy("reject-once")
+    conv = await mgr.create(make_request(), model=None, workdir=mgr.settings.default_workdir)
+    chunks = await collect_turn(mgr, conv)
+    assert conv.retried is True
+    assert [c for c in chunks if isinstance(c, DoneChunk)]
+    assert not [c for c in chunks if isinstance(c, ErrorChunk)]
+    await mgr.close_all()
+
+
 async def test_full_tool_cycle(mgr, fake_agy, tmp_path):
     fake_agy("hang")
     req = make_request()

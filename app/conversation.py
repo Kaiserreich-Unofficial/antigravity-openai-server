@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from app.agent_config import AgentPluginManager
-from app.agy_session import STREAM_CLOSED, AgySession
+from app.agy_session import STREAM_CLOSED, AgySession, is_invalid_argument
 from app.config import Settings
 from app.events import Error, Init, TextDelta, ToolStep, TurnDone
 from app.mcp_bridge import ConversationBridge, McpBridge, PendingCall
@@ -114,6 +114,11 @@ class Conversation:
     state: str = RUNNING
     thinking: Optional[TurnThinking] = None
     last_activity: float = field(default_factory=time.monotonic)
+    # True once a tool result has been fed back: a restart would re-run the
+    # create-time prompt and lose those results, so retries are off.
+    resumed: bool = False
+    # One INVALID_ARGUMENT retry per conversation.
+    retried: bool = False
 
     def touch(self) -> None:
         self.last_activity = time.monotonic()
@@ -250,6 +255,7 @@ class ConversationManager:
                     "tool results reference an expired or unknown conversation; retry the turn"
                 )
             conv.state = RUNNING
+            conv.resumed = True
             conv.touch()
             for tid in ids:
                 self._pending_index.pop(tid, None)
@@ -352,6 +358,20 @@ class ConversationManager:
                     yield DoneChunk("stop", usage)
                     return
                 elif isinstance(ev, Error):
+                    if (
+                        not conv.retried
+                        and not conv.resumed
+                        and not saw_text
+                        and not conv.bridge.pending_ids
+                        and is_invalid_argument(ev.message)
+                    ):
+                        conv.retried = True
+                        logger.warning(
+                            "conv=%s upstream rejected the turn; retrying once: %s",
+                            conv.conv_id, ev.message[:200],
+                        )
+                        await conv.session.restart()
+                        continue
                     message = ev.message
                     await self._close(conv)
                     status = (

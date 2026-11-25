@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.agy_session import STREAM_CLOSED, AgySession
+from app.agy_session import STREAM_CLOSED, AgySession, is_invalid_argument
 from app.config import ensure_workdir, get_settings, resolve_model
 from app.convcache import ConversationCache
 from app.conversation import (
@@ -163,6 +163,7 @@ async def _stream(
     timer = TurnTimer(timing, "autonomous")
     completion_tokens = 0
     text_parts: list[str] = []
+    retried = False
     try:
         yield sse(role_chunk(cid, model, created))
         while True:
@@ -214,6 +215,14 @@ async def _stream(
                     yield sse(usage_chunk(cid, model, created, usage))
                 break
             elif isinstance(ev, Error):
+                if not retried and not text_parts and is_invalid_argument(ev.message):
+                    # Nothing reached the client yet, so a fresh process is
+                    # invisible to it — the only way to rescue the turn.
+                    retried = True
+                    logger.warning("upstream rejected the turn; retrying once: %s",
+                                   ev.message[:200])
+                    await sess.restart()
+                    continue
                 logger.warning("upstream turn failed: %s", ev.message)
                 yield sse(error_envelope(ev.message, type="upstream_error"))
                 break
@@ -244,6 +253,7 @@ async def _collect(
     completion_tokens = 0
     chunks: list[str] = []
     reasoning_parts: list[str] = []
+    retried = False
     try:
         while True:
             remaining = deadline - loop.time()
@@ -290,6 +300,17 @@ async def _collect(
                     reasoning="\n\n".join(reasoning_parts) or None,
                 )
             elif isinstance(ev, Error):
+                if not retried and is_invalid_argument(ev.message):
+                    # Non-streaming: nothing has been sent, so discard what this
+                    # process produced and re-run the turn once.
+                    retried = True
+                    chunks.clear()
+                    reasoning_parts.clear()
+                    joiner = OutputFilter(flatten_tables=flatten_tables)
+                    logger.warning("upstream rejected the turn; retrying once: %s",
+                                   ev.message[:200])
+                    await sess.restart()
+                    continue
                 raise OpenAIError(ev.message, status_code=502, type="upstream_error")
             elif isinstance(ev, ToolStep):
                 if ev.state == "ACTIVE":

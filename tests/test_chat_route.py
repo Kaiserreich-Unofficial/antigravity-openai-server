@@ -243,15 +243,26 @@ async def test_empty_messages_rejected(client):
     assert r.status_code == 400
 
 
-async def test_large_prompt_is_staged_instead_of_rejected(client, fake_agy, monkeypatch):
-    fake_agy("simple")
+async def test_large_prompt_is_sent_over_stdin(client, fake_agy, monkeypatch):
+    fake_agy("stdin")
     http, _ = client
     monkeypatch.setattr(get_settings(), "max_prompt_chars", 10)
     r = await http.post("/v1/chat/completions", json={
         "messages": [{"role": "user", "content": "x" * 50}],
     })
     assert r.status_code == 200
-    assert r.json()["choices"][0]["message"]["content"] == "Hello world"
+    # The fake echoes what it received on stdin: the whole 50-char prompt.
+    assert r.json()["choices"][0]["message"]["content"] == "x" * 50
+
+
+async def test_invalid_argument_is_retried_once(client, fake_agy):
+    fake_agy("reject-once")
+    http, _ = client
+    r = await http.post("/v1/chat/completions", json={
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "retry ok"
 
 
 async def test_models_endpoint(client):

@@ -150,7 +150,7 @@ AGI_TIMING_LOG=false
 | `AGI_AGY_BIN` | `agy` | Path to the `agy` CLI. |
 | `AGI_DEFAULT_MODEL` | `Gemini 3.8 Flash (Medium)` | Model when the request names none / an unknown id. |
 | `AGI_DEFAULT_EFFORT` | _(unset)_ | Effort used when the request carries none (`low`/`medium`/`high`/`xhigh`). |
-| `AGI_MAX_PROMPT_CHARS` | `28000` | Fresh-fold prompt cap; larger prompts are staged to a file for agy. |
+| `AGI_MAX_PROMPT_CHARS` | `28000` | Fresh-fold prompt cap; larger prompts are sent over stdin as one stream-json turn message. |
 | `AGI_SYSTEM_PROMPT_VIA_AGENT` | `true` | Deliver the system message as a generated agent (`--agent <slug>`). Set `false` on agy 1.5 if managed-agent turns return 429; falls back to a prompt preamble. |
 | `AGI_AGENT_PLUGIN_PATH` | `~/.gemini/config/plugins/hermes-bridge` | Managed agent-plugin directory. |
 | `AGI_AGENT_CACHE_MAX` | `64` | Max generated agent files kept (LRU). |
@@ -361,7 +361,7 @@ p50/p95 of spawn / TTFT / total / throughput to JSON:
 ## How it works
 
 ```
-OpenAI client ──HTTP /v1──▶ agi-server ──argv + stream-json (stdout)──▶ agy CLI
+OpenAI client ──HTTP /v1──▶ agi-server ──argv|stdin + stream-json (stdout)──▶ agy CLI
        ▲                        │                                          │
        └──── tool_calls ────────┤          call_mcp_tool(hermesN,…)        │
        │                        │◀──────── in-process MCP bridge ◀─────────┘
@@ -369,8 +369,10 @@ OpenAI client ──HTTP /v1──▶ agi-server ──argv + stream-json (stdou
 ```
 
 - **Autonomous turn** (no `tools`): the conversation is folded into one prompt
-  (staged to a file when over `AGI_MAX_PROMPT_CHARS`) for a fresh agy
-  conversation, or resumed via the conversation cache.
+  for a fresh agy conversation, or resumed via the conversation cache. Prompts
+  over `AGI_MAX_PROMPT_CHARS` go over stdin (`--input-format stream-json`,
+  one NDJSON line) instead of argv; it is UTF-8 by construction, unlike a
+  staged file, which agy's reader can mistake for GBK.
 - **Tool turn:** a conversation owns one agy subprocess, an MCP bridge, and an
   entry in the shared MCP config. When the model calls a bridged function the
   subprocess blocks inside the MCP call; the server returns `tool_calls` and
@@ -381,6 +383,9 @@ OpenAI client ──HTTP /v1──▶ agi-server ──argv + stream-json (stdou
 - A background GC reaps suspended-too-long and idle conversations.
 - Upstream failures (non-SUCCESS result line, or exit without a result) come back
   as OpenAI errors with the exit code and stderr tail; 429 is preserved.
+- A turn rejected as `INVALID_ARGUMENT` (HTTP 400) is retried once on a fresh
+  process — but only before any tool result round-trip, since a restart re-runs
+  the create-time prompt.
 
 ## Troubleshooting
 
@@ -514,7 +519,7 @@ AGI_TIMING_LOG=false
 | `AGI_AGY_BIN` | `agy` | `agy` CLI 路径。 |
 | `AGI_DEFAULT_MODEL` | `Gemini 3.8 Flash (Medium)` | 请求未指定或指定未知模型时使用。 |
 | `AGI_DEFAULT_EFFORT` | 未设置 | 请求未带 effort 时的默认档（`low`/`medium`/`high`/`xhigh`）。 |
-| `AGI_MAX_PROMPT_CHARS` | `28000` | 首次折叠的 prompt 上限；超长时落地为文件交给 agy。 |
+| `AGI_MAX_PROMPT_CHARS` | `28000` | 首次折叠的 prompt 上限；超长时经 stdin 以一条 stream-json 消息投递。 |
 | `AGI_SYSTEM_PROMPT_VIA_AGENT` | `true` | 用生成 agent（`--agent`）传递 system prompt。agy 1.5 下若托管 agent 轮次 429，设为 `false` 回退为提示词前缀。 |
 | `AGI_AGENT_PLUGIN_PATH` | `~/.gemini/config/plugins/hermes-bridge` | 托管 agent 插件目录。 |
 | `AGI_AGENT_CACHE_MAX` | `64` | 保留的生成 agent 文件数（LRU）。 |
@@ -689,18 +694,19 @@ loginctl enable-linger "$USER"
 ### 工作原理
 
 ```
-OpenAI 客户端 ──HTTP /v1──▶ agi-server ──argv + stream-json──▶ agy CLI
+OpenAI 客户端 ──HTTP /v1──▶ agi-server ──argv 或 stdin + stream-json──▶ agy CLI
        ▲                        │                                   │
        └──── tool_calls ────────┤        call_mcp_tool(hermesN,…)    │
        │                        │◀───── 进程内 MCP 桥 ◀──────────────┘
        └──── 工具结果 ─────────▶┘        (/mcp/<conv_id>, loopback)
 ```
 
-- **自主轮次**（无 `tools`）：整段对话折叠成一个 prompt（超过 `AGI_MAX_PROMPT_CHARS` 时落地文件），新建 agy 会话或经缓存续接。
+- **自主轮次**（无 `tools`）：整段对话折叠成一个 prompt，新建 agy 会话或经缓存续接。超过 `AGI_MAX_PROMPT_CHARS` 的 prompt 改走 stdin（`--input-format stream-json`，一条 NDJSON 消息），编码由本服务显式定为 UTF-8；不再落盘，避免 agy 的文件读取器把中文为主的 UTF-8 误判成 GBK。
 - **工具轮次**：一个会话对应一个 agy 子进程、一个 MCP 桥和共享 MCP 配置里的一个条目。模型调用桥接函数时子进程阻塞在 MCP 调用里；服务端返回 `tool_calls` 并把会话置为 `SUSPENDED`。带工具结果的下一次请求唤醒同一个子进程。
 - **finish_reason** 为推断值（`stop`、`tool_calls`）；`usage` 含 prompt/completion/total 以及 `completion_tokens_details.reasoning_tokens`。
 - 后台 GC 回收挂起过久和空闲的会话。
 - 上游失败（result 非 SUCCESS，或未产出 result 就退出）以 OpenAI 错误返回，带退出码与 stderr 尾部；429 保持为 429。
+- 被上游判为 `INVALID_ARGUMENT`（HTTP 400）的轮次会在新进程上重试一次；只限尚无工具结果往返的阶段，因为重启会重跑建会话时的 prompt。
 
 ### 常见问题
 
