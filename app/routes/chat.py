@@ -185,8 +185,9 @@ async def _stream(
                     text_parts.append(tail)
                     yield sse(text_chunk(cid, model, created, tail))
                 if not text_parts:
+                    code = await sess.exit_status()
                     yield sse(error_envelope(
-                        f"agy produced no result ({sess.diagnostics()})",
+                        f"agy exited ({code}) without producing a result ({sess.diagnostics()})",
                         type="upstream_error",
                     ))
                     break
@@ -213,6 +214,7 @@ async def _stream(
                     yield sse(usage_chunk(cid, model, created, usage))
                 break
             elif isinstance(ev, Error):
+                logger.warning("upstream turn failed: %s", ev.message)
                 yield sse(error_envelope(ev.message, type="upstream_error"))
                 break
             elif isinstance(ev, ToolStep):
@@ -382,6 +384,7 @@ async def _tool_stream(mgr, conv, req: ChatCompletionRequest, cid, model, create
                     yield sse(usage_chunk(cid, model, created, ch.usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
                 break
             elif isinstance(ch, ErrorChunk):
+                logger.warning("upstream tool turn failed (%d): %s", ch.status_code, ch.message)
                 yield sse(error_envelope(ch.message, type="upstream_error"))
                 break
         yield DONE
@@ -426,6 +429,7 @@ async def _tool_collect(mgr, conv, cid, model, created, flatten_tables: bool = T
                     reasoning="\n\n".join(reasoning_parts) or None,
                 )
             elif isinstance(ch, ErrorChunk):
+                logger.warning("upstream tool turn failed (%d): %s", ch.status_code, ch.message)
                 raise OpenAIError(ch.message, status_code=ch.status_code, type="upstream_error")
         raise OpenAIError("no response produced", status_code=502, type="upstream_error")
     finally:

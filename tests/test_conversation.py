@@ -149,6 +149,31 @@ async def test_upstream_error_surfaces(mgr, fake_agy):
     chunks = await collect_turn(mgr, conv)
     errs = [c for c in chunks if isinstance(c, ErrorChunk)]
     assert errs and "not recognized" in errs[0].message
+    assert errs[0].status_code == 502
+
+
+async def test_quota_error_maps_to_429(mgr, fake_agy):
+    fake_agy("quota")
+    conv = await mgr.create(make_request(), model=None,
+                            workdir=mgr.settings.default_workdir)
+    chunks = await collect_turn(mgr, conv)
+    errs = [c for c in chunks if isinstance(c, ErrorChunk)]
+    assert errs and errs[0].status_code == 429
+    assert "RESOURCE_EXHAUSTED" in errs[0].message
+
+
+async def test_death_without_result_surfaces_error(mgr, fake_agy):
+    # agy giving up after repeated HTTP 429s: no stdout events at all, only a
+    # non-zero exit and a stderr tail. Must not look like a clean empty turn.
+    fake_agy("crash")
+    conv = await mgr.create(make_request(), model=None,
+                            workdir=mgr.settings.default_workdir)
+    chunks = await collect_turn(mgr, conv)
+    errs = [c for c in chunks if isinstance(c, ErrorChunk)]
+    assert errs, "expected ErrorChunk, got %r" % [type(c).__name__ for c in chunks]
+    assert errs[0].status_code == 429
+    assert "RESOURCE_EXHAUSTED" in errs[0].message
+    assert conv.state == "closed"
 
 
 async def test_gc_reaps_suspended(mgr, fake_agy, tmp_path):

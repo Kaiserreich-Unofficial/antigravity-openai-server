@@ -285,6 +285,7 @@ class ConversationManager:
         authoritative suspend trigger.
         """
         timeout = self.settings.request_timeout_s
+        saw_text = False
         try:
             while True:
                 ev = await self._next_event_or_call(conv, timeout)
@@ -312,10 +313,29 @@ class ConversationManager:
                     # Close BEFORE yielding: the consumer may break out of its
                     # async-for on a terminal chunk, and code after that yield
                     # would never run (GeneratorExit).
+                    code = await conv.session.exit_status()
+                    diag = conv.session.diagnostics()
                     await self._close(conv)
-                    yield DoneChunk("stop", {})
+                    if saw_text:
+                        # Text arrived but no result line: treat as a clean end
+                        # (older agy builds end turns this way).
+                        yield DoneChunk("stop", {})
+                    else:
+                        # Nothing was produced: surface the real reason instead
+                        # of a silent finish. agy's stderr carries the upstream
+                        # error (e.g. HTTP 429 / RESOURCE_EXHAUSTED).
+                        message = f"agy exited ({code}) without producing a result"
+                        if diag and diag != "no diagnostics captured":
+                            message += f": {diag}"
+                        status = (
+                            429
+                            if ("429" in diag or "RESOURCE_EXHAUSTED" in diag)
+                            else 502
+                        )
+                        yield ErrorChunk(message[:1500], status_code=status)
                     return
                 if isinstance(ev, TextDelta):
+                    saw_text = True
                     yield TextChunk(ev.text)
                 elif isinstance(ev, ToolStep):
                     if ev.matches_server(conv.slot):
@@ -334,7 +354,10 @@ class ConversationManager:
                 elif isinstance(ev, Error):
                     message = ev.message
                     await self._close(conv)
-                    yield ErrorChunk(message, status_code=502)
+                    status = (
+                        429 if ("429" in message or "RESOURCE_EXHAUSTED" in message) else 502
+                    )
+                    yield ErrorChunk(message[:1500], status_code=status)
                     return
                 # Init / others: ignore.
         except asyncio.CancelledError:

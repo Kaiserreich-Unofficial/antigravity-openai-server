@@ -181,6 +181,22 @@ class AgySession:
     def running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
+    async def exit_status(self, timeout: float = 2.0) -> Optional[int]:
+        """Return the subprocess exit code, waiting briefly if it is still exiting.
+
+        Called after stdout reaches EOF: the process has usually already exited,
+        but may still be flushing. Returns ``None`` when it did not exit in time.
+        """
+        proc = self._proc
+        if proc is None:
+            return None
+        if proc.returncode is not None:
+            return proc.returncode
+        try:
+            return await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
     async def _read_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         stdout = self._proc.stdout

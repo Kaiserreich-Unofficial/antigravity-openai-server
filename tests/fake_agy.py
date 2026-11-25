@@ -71,11 +71,29 @@ def main():
         sys.stderr.flush()
         return
 
+    if MODE == "crash":
+        # Died before emitting any event: surfaces the upstream failure only in
+        # stderr (mirrors agy giving up after repeated HTTP 429s).
+        sys.stderr.write(
+            'AGY_ERROR: {"short_error":"transport error (ResourceExhausted, '
+            'HTTP 429): RESOURCE_EXHAUSTED"}\n'
+        )
+        sys.stderr.flush()
+        sys.exit(3)
+
     init_line()
     if MODE == "error":
         if DELAY:
             time.sleep(DELAY)
         result(status="ERROR", response="", error="invalid --model \"bogus\": not recognized")
+        return
+
+    if MODE == "quota":
+        result(
+            status="ERROR",
+            response="",
+            error="RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).",
+        )
         return
 
     text(2, "Hello ", state="ACTIVE")
