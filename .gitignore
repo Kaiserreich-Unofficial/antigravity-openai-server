@@ -8,3 +8,5 @@ build/
 dist/
 .DS_Store
 uv.lock
+logs/
+service.env.json
